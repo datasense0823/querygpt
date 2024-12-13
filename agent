@@ -1,0 +1,75 @@
+import os
+from langchain import hub
+from langchain.agents import create_react_agent, AgentExecutor
+from langchain_core.tools import Tool
+from langchain_groq import ChatGroq
+from langchain_core.prompts import PromptTemplate
+from dotenv import load_dotenv
+from selection_tool import schema
+from sql_query_tool import sql_query
+from sql_execution import sqlexecute
+from result import query_response
+
+
+load_dotenv()
+
+def lookup(user_question: str) -> str:
+    """
+    Processes the user query using an agent to generate the relevant SQL query.
+
+    Args:
+        user_question (str): The user's natural language query.
+
+    Returns:
+        str: The generated SQL query.
+    """
+    # Initialize the LLM
+    llm = ChatGroq(model="llama3-8b-8192", temperature=0)
+
+    # Tools required for the agent
+    tools = [schema, sql_query,sqlexecute,query_response]
+
+    # Pull the React prompt from LangChain hub
+    react_prompt = hub.pull("hwchase17/react")
+
+    # Template for generating user query prompt
+    template = """
+        OBJECTIVE: Generate a valid SQL query and then execute it to answer the user's natural language query.
+
+        STEPS:
+        1. Analyze the user's question.
+        2. Use the schema tool to understand the database structure.
+        3. Use the SQL query tool to generate the corresponding SQL query using the schema.
+        4. Execute the SQL Query and respond to user's orginal question in a conversational style
+
+        User Query: '{input}'
+
+        Strict Requirements:
+        - Return only the SQL query as output. No extra text, comments, or explanations.
+        - Ensure the SQL query aligns perfectly with the user's intent, leveraging all necessary table relationships, columns, and metadata.
+    """
+
+    prompt_template = PromptTemplate(template=template, input_variables=["input"])
+
+    # Format the input question using the template
+    formatted_input = prompt_template.format(input=user_question)
+
+    # Create the React agent
+    agent = create_react_agent(llm=llm, tools=tools, prompt=react_prompt)
+
+    # Configure the agent executor
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True,handle_parsing_errors=True)
+
+    # Invoke the agent to process the user query
+    result = agent_executor.invoke(
+        input={"input": formatted_input}
+    )
+
+    # Return the result content (the SQL query)
+    return result
+
+# Example usage
+if __name__ == "__main__":
+    print(lookup("Which artist sung the album Chemical Wedding"))
+
+
