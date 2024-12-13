@@ -1,0 +1,82 @@
+import sqlite3
+import json
+from langchain_core.prompts import PromptTemplate
+from langchain_groq import ChatGroq
+from langchain_core.output_parsers import JsonOutputParser
+
+
+# Step 1: Extract table metadata
+def extract_table_metadata(connection):
+    """
+    Extract table names and their column names from the database.
+    """
+    tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+    schema = {}
+    
+    for table in tables:
+        table_name = table[0]
+        # Fetch column details
+        columns = connection.execute(f"PRAGMA table_info({table_name});").fetchall()
+        
+        # Parse columns
+        column_names = [col[1] for col in columns]
+        
+        # Store table metadata
+        schema[table_name] = {
+            "columns": column_names
+        }
+
+    return schema
+
+# Connect to the database
+connection = sqlite3.connect("Chinook.db")
+schema_metadata = extract_table_metadata(connection)
+schema_input=json.dumps(schema_metadata, indent=4)
+
+
+# Step 2: Initialize LLM and output parser
+llm = ChatGroq(model="llama3-8b-8192", temperature=0)
+output_parser = JsonOutputParser()
+
+# Step 3: Define the prompt template
+description_prompt = PromptTemplate(
+    input_variables=["schema"],
+    template="""
+        Given the following schema metadata, provide a detailed description of each table in the schema.
+        Each description should:
+        - Be at least 50 words long.
+        - Explain the purpose of the table.
+        - Mention key columns and their roles.
+        EXTREMELY IMPORTANT:Return only the JSON Format. No extra noise or text . Validate befor giving answer. i want nothing extra
+        
+        Return the result as a JSON object with the format:
+        {{
+            "TableName1": {{
+                "description": "Detailed description of TableName1"
+            }},
+            "TableName2": {{
+                "description": "Detailed description of TableName2"
+            }}
+        }}
+        
+        Schema metadata:
+        {schema}
+    """
+)
+
+# Step 4: Generate detailed descriptions
+def generate_table_descriptions(schema_metadata):
+    """
+    Use LLM to generate detailed descriptions for tables based on their names and columns.
+    """
+    chain=description_prompt |llm
+    response = chain.invoke({"schema":schema_metadata})
+    return output_parser.parse(response.content)
+
+
+# Step 5: Generate descriptions and print
+enhanced_metadata = generate_table_descriptions(schema_metadata)
+
+
+final=json.dumps(enhanced_metadata, indent=4)
+print(final)
