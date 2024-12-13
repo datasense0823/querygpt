@@ -1,0 +1,112 @@
+from pinecone import Pinecone, ServerlessSpec
+from langchain_openai import OpenAIEmbeddings
+import sqlite3
+
+# Initialize Pinecone client
+pc = Pinecone(api_key="Enter our API Key")   # Replace with your Pinecone API key
+index_name = "tables"  # Replace with your index name
+index = pc.Index(index_name)
+
+embedding_model = OpenAIEmbeddings()
+
+def get_relevant_table_names(user_query, index, top_k=2):
+    """
+    Retrieve the most relevant table names based on the user's query.
+    """
+    try:
+        # Generate embedding for the user query
+        query_embedding = embedding_model.embed_query(user_query)
+
+        # Query Pinecone for top_k matches
+        results = index.query(vector=query_embedding, top_k=top_k, include_metadata=True)
+
+        # Extract relevant table names from metadata
+        table_names = []
+        for match in results.get("matches", []):
+            metadata = match.get("metadata", {})
+            table_name = metadata.get("table", "Unknown")
+            table_names.append(table_name)
+
+        return table_names
+
+    except Exception as e:
+        print(f"Error retrieving table names: {e}")
+        return []
+
+def get_table_keys(table_names, sqlite_connection):
+    """
+    Retrieve the primary keys and foreign keys for the given tables from the SQLite database.
+    """
+    table_keys = []
+
+    # Enable foreign key enforcement
+    sqlite_connection.execute("PRAGMA foreign_keys = ON;")
+
+    for table in table_names:
+        try:
+            # Use PRAGMA table_info to fetch column metadata
+            table_info = sqlite_connection.execute(f"PRAGMA table_info({table});").fetchall()
+            primary_key = [row[1] for row in table_info if row[5] == 1]  # Column name is at index 1, pk flag is at index 5
+
+            # Use PRAGMA foreign_key_list to fetch foreign keys
+            foreign_keys = sqlite_connection.execute(f"PRAGMA foreign_key_list({table});").fetchall()
+            foreign_key_details = [
+                {
+                    "column": fk[3],  # Local column name
+                    "references_table": fk[2],  # Referenced table name
+                    "references_column": fk[4]  # Referenced column name
+                }
+                for fk in foreign_keys
+            ]
+
+            # Append table details
+            table_keys.append({
+                "table_name": table,
+                "primary_key": primary_key[0] if primary_key else "No Primary Key Found",
+                "foreign_keys": foreign_key_details if foreign_key_details else None
+            })
+
+        except Exception as e:
+            print(f"Error retrieving keys for table {table}: {e}")
+            table_keys.append({
+                "table_name": table,
+                "primary_key": "Error",
+                "foreign_keys": None
+            })
+
+    return table_keys
+
+def get_relevant_tables_with_keys(user_query, sqlite_connection, index, top_k=2):
+    """
+    Get relevant tables based on user query, and fetch their primary keys and foreign keys.
+    """
+    # Get relevant table names dynamically
+    relevant_tables = get_relevant_table_names(user_query, index, top_k)
+
+    # Fetch primary and foreign keys for relevant tables
+    relevant_table_keys = get_table_keys(relevant_tables, sqlite_connection)
+
+    return relevant_table_keys
+
+# Example usage
+if __name__ == "__main__":
+    # Example user query
+    user_query = "How many employees were born after year 1960"
+
+    # Connect to SQLite database
+    sqlite_connection = sqlite3.connect("Chinook.db")  # Replace with your database
+
+    # Get relevant tables with keys
+    relevant_table_keys = get_relevant_tables_with_keys(user_query, sqlite_connection, index)
+
+    # Display output
+    print("Relevant Table Keys:")
+    for table_data in relevant_table_keys:
+        print(f"Table Name: {table_data['table_name']}")
+        print(f"  Primary Key: {table_data['primary_key']}")
+        if table_data['foreign_keys']:
+            print(f"  Foreign Keys:")
+            for fk in table_data['foreign_keys']:
+                print(f"    Column: {fk['column']} -> References: {fk['references_table']}.{fk['references_column']}")
+        else:
+            print(f"  Foreign Keys: None")
