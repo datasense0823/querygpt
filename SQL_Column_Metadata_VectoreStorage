@@ -1,0 +1,85 @@
+from table_details import enhanced_metadata
+from pinecone import Pinecone, ServerlessSpec
+from langchain_openai import OpenAIEmbeddings
+import json
+
+
+# Initialize Pinecone client
+pc = Pinecone(api_key="Your API Key")
+
+
+# Define index name
+index_name = "columns"
+
+# Create a serverless index (use dimension according to your embedding model)
+pc.create_index(
+    name=index_name,
+    dimension=1536,  # Replace with your embedding model dimension
+    metric="cosine",  # Distance metric used for nearest-neighbor search
+    spec=ServerlessSpec(
+        cloud="aws",  # Cloud provider
+        region="us-east-1"  # Region
+    )
+)
+
+# Connect to the Pinecone index
+index = pc.Index(index_name)
+
+# Initialize OpenAI embeddings
+embedding_model = OpenAIEmbeddings()
+
+
+def load_enhanced_metadata(file_path):
+    """
+    Load the enhanced metadata from a JSON file.
+    """
+    with open(file_path, "r") as file:
+        metadata = json.load(file)
+    return metadata
+
+# Load enhanced metadata from file
+metadata_file_path = "enhanced_metadata.json"  # Path to your JSON file
+enhanced_metadata = load_enhanced_metadata(metadata_file_path)
+
+def store_metadata_in_pinecone(enhanced_metadata, index, embedding_model):
+    """
+    Store metadata in Pinecone with embeddings.
+    """
+    vectors = []  # Prepare vectors for batch upsert
+
+    for column, details in enhanced_metadata.items():
+        # Generate embedding for the column description
+        column_text = f"Column: {column}. Description: {details['description']}"
+        column_embedding = embedding_model.embed_query(column_text)
+
+        # Prepare metadata with proper serialization
+        metadata = {
+            "column_name": column,  # Include column name explicitly
+            **{
+                key: (
+                    json.dumps(value) if isinstance(value, dict)  # Convert dicts (e.g., statistics) to JSON strings
+                    else value if value is not None  # Use value as-is if it's not None
+                    else ""  # Default to empty string for None
+                ) if key != "distinct_values" else value or []  # For 'distinct_values', replace None with an empty list
+                for key, value in details.items()
+                if key != "description"  # Exclude description from metadata
+            }
+        }
+
+        # Create a vector entry
+        vectors.append({
+            "id": f"column-{column}",
+            "values": column_embedding,
+            "metadata": metadata
+        })
+
+    # Upsert vectors to Pinecone
+    index.upsert(vectors)
+    print(f"Stored {len(vectors)} metadata entries in Pinecone.")
+
+
+
+# Call the store function
+store_metadata_in_pinecone(enhanced_metadata, index, embedding_model)
+
+
