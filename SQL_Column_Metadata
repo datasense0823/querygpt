@@ -1,0 +1,169 @@
+import sqlite3
+import json
+import re
+from langchain_core.prompts import PromptTemplate
+from langchain_groq import ChatGroq
+from langchain_core.output_parsers import JsonOutputParser
+
+
+
+def extract_detailed_column_metadata(connection):
+    """
+    Extract detailed metadata for each column, ensuring accurate identification of all columns
+    and foreign key relationships across all tables.
+    """
+    # Fetch all table names
+    tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+    column_metadata = {}
+
+    for table in tables:
+        table_name = table[0]  # Access the first element to get the table name
+
+        # Fetch column details for the current table
+        columns = connection.execute(f"PRAGMA table_info({table_name});").fetchall()
+        foreign_keys = connection.execute(f"PRAGMA foreign_key_list({table_name});").fetchall()
+
+        # Build a normalized map of foreign keys
+        fk_map = {
+            fk[3]: {"references_table": fk[2], "references_column": fk[4]} for fk in foreign_keys
+        }
+
+        # Debugging: Show the foreign key map for the current table
+        print(f"Table: {table_name}, Foreign Keys: {fk_map}")
+
+        for col in columns:
+            column_name = col[1]  # Column name
+            full_type = col[2]  # Column data type
+            is_primary_key = bool(col[5])  # Check if it's a primary key
+            is_foreign_key = column_name in fk_map  # Check if it's in the foreign key map
+            references_table = fk_map[column_name]["references_table"] if is_foreign_key else None
+            references_column = fk_map[column_name]["references_column"] if is_foreign_key else None
+
+            # Extract base type and additional details (e.g., NVARCHAR(220))
+            type_match = re.match(r"(\w+)(\(([^)]+)\))?", full_type)
+            if type_match:
+                base_type = type_match.group(1).upper()
+                type_details = type_match.group(3)  # Precision/length, e.g., "220" in NVARCHAR(220)
+            else:
+                base_type = full_type.upper()
+                type_details = None
+
+            # Fetch column data for analysis
+            col_data = connection.execute(f"SELECT {col[1]} FROM {table_name}").fetchall()
+            col_data = [row[0] for row in col_data if row[0] is not None]
+
+            # Analyze based on data type
+            stats = {}
+            description = ""
+            if not col_data:  # Handle empty columns
+                description = "This column contains no data."
+            elif base_type in ("INTEGER", "REAL", "NUMERIC"):  # Numeric column
+                stats = {
+                    "min": min(col_data),
+                    "max": max(col_data),
+                    "avg": sum(col_data) / len(col_data) if col_data else None,
+                }
+                description = f"A numerical column ranging from {stats['min']} to {stats['max']}, with an average value of {stats['avg']:.2f}. The format is {full_type}."
+            elif base_type in ("TEXT", "VARCHAR", "NVARCHAR"):  # Categorical column
+                distinct_vals = list(set(col_data))
+                cardinality = len(distinct_vals)
+                stats = {"cardinality": cardinality}
+                description = f"A categorical column with {cardinality} distinct values. The format is {full_type}."
+            elif base_type in ("DATETIME", "DATE", "TIMESTAMP"):  # Datetime column
+                try:
+                    min_date = min(col_data)
+                    max_date = max(col_data)
+                    stats = {"min_date": min_date, "max_date": max_date}
+                    description = f"A datetime column with values ranging from {min_date} to {max_date}. The format is {full_type}."
+                except ValueError:
+                    description = f"A datetime column with invalid or missing values. The format is {full_type}."
+            else:  # Unsupported or unknown type
+                description = f"A column with an unhandled data type ({full_type})."
+
+            # Add metadata for the column
+            column_metadata[f"{table_name}.{column_name}"] = {
+                "table": table_name,
+                "type": full_type,
+                "description": description,
+                "is_primary_key": is_primary_key,
+                "is_foreign_key": is_foreign_key,
+                "references_table": references_table,
+                "references_column": references_column,
+                "distinct_values": distinct_vals if base_type in ("TEXT", "VARCHAR", "NVARCHAR") and cardinality <= 10 else None,
+                "statistics": stats,
+            }
+
+    return column_metadata
+
+# Connect to the database
+connection = sqlite3.connect("Chinook.db")
+column_metadata = extract_detailed_column_metadata(connection)
+
+
+def enhance_column_descriptions_with_llm(column_metadata):
+    """
+    Enhance column descriptions using LLM.
+    """
+    llm = ChatGroq(model="llama3-8b-8192", temperature=0)
+    output_parser = JsonOutputParser()
+
+    prompt = PromptTemplate(
+        input_variables=["metadata"],
+        template="""
+        Given the following column metadata, enhance the descriptions with detailed business context and usability.
+        IMPORTANT:
+        - Return only valid JSON adhering strictly to the format below.
+        - Do not include extra text, comments, or any additional information outside the JSON structure.
+        - Validate the JSON structure to ensure correctness before outputting.
+        -Kindly 100% Make sure there is no noise no extra space
+        -Generate all the columns. Dont miss or skip any column
+
+        The enhanced descriptions must:
+        - Be at least 50 words long.
+        - Explain the column's role within its table.
+        - Include business use cases, relevance, and cross-column relationships.
+
+        Return the JSON in the following format:
+        {{
+            "ColumnName1": {{
+                "table": "TableName1",
+                "type": "ColumnType1",
+                "description": "Enhanced description of the column, including its purpose and business relevance.",
+                "is_primary_key": true/false,
+                "is_foreign_key": true/false,
+                "references_table": "ReferencedTableName" or null,
+                "references_column": "ReferencedColumnName" or null,
+                "distinct_values": ["value1", "value2", ...] or null,
+                "statistics": {{ "key": value, ... }}
+            }},
+            ...
+        }}
+
+        Column Metadata:
+        {metadata}
+
+        Validate and ensure the JSON output strictly adheres to this format.
+        """
+    )
+
+    chain = prompt | llm | output_parser
+    enhanced_metadata = chain.invoke({"metadata": json.dumps(column_metadata)})
+    return enhanced_metadata
+
+
+# Connect to the database
+connection = sqlite3.connect("Chinook.db")
+column_metadata = extract_detailed_column_metadata(connection)
+
+# Enhance descriptions using LLM
+enhanced_metadata = enhance_column_descriptions_with_llm(column_metadata)
+
+# Output the enhanced metadata
+
+print(json.dumps(enhanced_metadata, indent=4))
+
+with open("enhanced_metadata.json", "w") as file:
+    json.dump(enhanced_metadata, file, indent=4)
+
+print("Enhanced metadata saved locally as 'enhanced_metadata.json'.")
+
