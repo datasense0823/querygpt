@@ -1,0 +1,70 @@
+from langchain_groq import ChatGroq
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.tools import Tool
+import json
+
+# Define the LLM and PromptTemplate
+llm = ChatGroq(model="llama3-8b-8192", temperature=0)
+output_parser = JsonOutputParser()
+
+sql_generation_prompt = PromptTemplate(
+    input_variables=["schema", "user_query"],
+    template="""
+        Given the following database schema and a user's natural language query, generate an SQL query:
+        - Use the schema metadata for accurate table and column references.
+        - Include JOINs if necessary based on foreign key relationships.
+        - Validate that the SQL query answers the user's query and aligns with the schema.
+
+        Schema:
+        {schema}
+
+        User Query:
+        {user_query}
+
+        EXTREMELY IMPORTANT: Return only the SQL query. No extra text, comments, or explanations.
+
+        {{"sql_query": "<Generated SQL Query>"}}
+    """
+)
+
+def generate_sql_from_query(user_query):
+    """
+    Generate SQL query from a user's natural language query using schema details from a JSON file.
+
+    Args:
+        user_query (str): The user's natural language query.
+
+    Returns:
+        str: The generated SQL query.
+    """
+    try:
+        # Load schema from the JSON file
+        with open("schema.json", "r") as file:
+            combined_details = json.load(file)
+
+        # Prepare schema description
+        schema_description = "\n".join([
+            f"Table: {table['table_name']}, Primary Key: {table['primary_key']}, Foreign Keys: {', '.join([f'{fk['column']} -> {fk['references_table']}.{fk['references_column']}' for fk in table['foreign_keys']]) if table['foreign_keys'] else 'None'}\nColumns: {', '.join([col['column_name'] for col in table['columns']])}"
+            for table in combined_details
+        ])
+
+        # Use LLM to generate SQL query
+        chain = sql_generation_prompt | llm
+        response = chain.invoke({"schema": schema_description, "user_query": user_query})
+        sql_query = output_parser.parse(response.content)
+
+        return sql_query["sql_query"].strip()
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+# Define the Tool
+sql_query = Tool(
+    name="sql_query",
+    func=generate_sql_from_query,
+    description="""This tool takes a user's natural language query and generates an SQL query based on the schema metadata stored in a JSON file."""
+)
+
+
