@@ -1,0 +1,44 @@
+from langchain_core.tools import Tool
+from langchain_groq import ChatGroq
+from langchain_core.prompts import PromptTemplate
+
+# Function to generate a conversational response
+def generate_response(sql_results):
+    """
+    Generate a conversational response from the SQL results using LLM.
+
+    Args:
+        sql_results (str): The result of the executed SQL query as a string.
+
+    Returns:
+        str: A conversational response.
+    """
+    llm = ChatGroq(model="llama3-8b-8192", temperature=0)
+
+    response_prompt = PromptTemplate(
+        input_variables=["sql_results"],
+        template="""
+            Given the following SQL query results: {sql_results},
+            provide a concise and conversational answer that directly addresses the results.
+            Make sure the response is natural and easy to understand.
+        """
+    )
+
+    try:
+        chain = response_prompt | llm
+        response = chain.invoke({"sql_results": sql_results})
+        return response.content.strip()
+    except Exception as e:
+        print(f"Error generating conversational response: {e}")
+        return "I'm sorry, I couldn't generate a response."
+
+
+
+# Define the Tool
+query_response = Tool(
+    name="conversational_response",
+    func=generate_response,
+    description="""This tool takes Original user question and SQL query results as input and returns a conversational response."""
+)
+
+
