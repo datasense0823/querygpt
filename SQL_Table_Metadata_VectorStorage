@@ -1,0 +1,59 @@
+from table_details import enhanced_metadata
+from pinecone import Pinecone, ServerlessSpec
+from langchain_openai import OpenAIEmbeddings
+
+
+# Initialize Pinecone client
+pc = Pinecone(api_key="Enter Your API KEY")
+
+
+# Define index name
+index_name = "tables"
+
+# Create a serverless index (use dimension according to your embedding model)
+pc.create_index(
+    name=index_name,
+    dimension=1536,  # Replace with your embedding model dimension
+    metric="cosine",  # Distance metric used for nearest-neighbor search
+    spec=ServerlessSpec(
+        cloud="aws",  # Cloud provider
+        region="us-east-1"  # Region
+    )
+)
+
+# Connect to the Pinecone index
+index = pc.Index(index_name)
+
+# Initialize OpenAI embeddings
+embedding_model = OpenAIEmbeddings()
+
+
+# Function to store metadata in Pinecone
+def store_metadata_in_pinecone(enhanced_metadata, index, embedding_model):
+    """
+    Store metadata in Pinecone with embeddings.
+    """
+    vectors = []  # Prepare vectors for batch upsert
+
+    for table, details in enhanced_metadata.items():
+        # Generate embedding for the table description
+        table_text = f"Table: {table}. Description: {details['description']}"
+        table_embedding = embedding_model.embed_query(table_text)
+        
+        # Create a vector entry
+        vectors.append({
+            "id": f"table-{table}",
+            "values": table_embedding,
+            "metadata": {
+                "table": table,
+                "description": details["description"]
+            }
+        })
+
+    # Upsert vectors to Pinecone
+    index.upsert(vectors)
+    print(f"Stored {len(vectors)} metadata entries in Pinecone.")
+
+
+# Store metadata in Pinecone
+store_metadata_in_pinecone(enhanced_metadata, index, embedding_model)
