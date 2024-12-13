@@ -1,0 +1,63 @@
+from pinecone import Pinecone
+from langchain_openai import OpenAIEmbeddings
+
+def retrieve_top_columns(user_query, index, embedding_model, top_k=10):
+    """
+    Retrieve top columns based on user query and extract relevant metadata.
+
+    Args:
+        user_query (str): The user's search query.
+        index (pinecone.Index): Pinecone index instance.
+        embedding_model (OpenAIEmbeddings): Embedding model for query embedding.
+        top_k (int): Number of top results to retrieve.
+
+    Returns:
+        List[Dict]: List of top columns with relevant metadata.
+    """
+    # Generate embedding for the user's query
+    query_embedding = embedding_model.embed_query(user_query)
+
+    # Query Pinecone for the top-k matches
+    response = index.query(
+        vector=query_embedding,
+        top_k=top_k,
+        include_metadata=True  # Include metadata in the response
+    )
+
+    # Extract and format results
+    results = []
+    for match in response['matches']:
+        metadata = match['metadata']
+        results.append({
+            "column_name": metadata.get("column_name", "Unknown"),
+            "table_name": metadata.get("table", "Unknown"),
+            "is_primary_key": metadata.get("is_primary_key", False),
+            "is_foreign_key": metadata.get("is_foreign_key", False),
+            "references_table": metadata.get("references_table", "None"),
+            "references_column": metadata.get("references_column", "None"),
+        })
+
+    return results
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize Pinecone and embedding model
+    pc = Pinecone(api_key="API Key)
+    index_name = "columns"
+    index = pc.Index(index_name)
+    embedding_model = OpenAIEmbeddings()
+
+    # User query
+    user_query = "Which artist sang the album facelift"
+
+    # Retrieve and display top columns
+    top_columns = retrieve_top_columns(user_query, index, embedding_model)
+    for i, column in enumerate(top_columns, 1):
+        print(f"Rank {i}:")
+        print(f"  Column Name: {column['column_name']}")
+        print(f"  Table Name: {column['table_name']}")
+        print(f"  Is Primary Key: {column['is_primary_key']}")
+        print(f"  Is Foreign Key: {column['is_foreign_key']}")
+        print(f"  References Table: {column['references_table']}")
+        print(f"  References Column: {column['references_column']}")
+        print()
