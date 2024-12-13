@@ -1,0 +1,36 @@
+import sqlite3
+from langchain_core.tools import Tool
+
+# Function to execute SQL query and fetch the result
+def execute_sql_query(sql_query):
+    """
+    Execute the provided SQL query against the SQLite database and return the result.
+
+    Args:
+        sql_query (str): The SQL query to execute.
+
+    Returns:
+        list: The result of the executed query.
+    """
+    try:
+        connection = sqlite3.connect("Chinook.db")
+        cursor = connection.cursor()
+        cursor.execute(sql_query)
+        result = cursor.fetchall()
+        connection.close()
+        return result
+    except Exception as e:
+        print(f"Error executing SQL query: {e}")
+        return None
+
+
+# Define the Tool
+sqlexecute = Tool(
+    name="sql_execution",
+    func=execute_sql_query,
+    description="""This tool takes an SQL query, executes it, and returns the result."""
+)
+
+
+
+
