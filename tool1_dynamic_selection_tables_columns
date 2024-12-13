@@ -1,0 +1,110 @@
+from table_retrieval import get_relevant_tables_with_keys
+from column_retrieval import retrieve_top_columns
+from pinecone import Pinecone
+from langchain_openai import OpenAIEmbeddings
+from langchain_core.tools import Tool
+import sqlite3
+import json
+
+def get_combined_details(user_query):
+    """
+    Retrieve and combine relevant table details with primary and foreign key information,
+    along with corresponding relevant column details. Save the JSON to a file.
+
+    Args:
+        user_query (str): The user's natural language query.
+
+    Returns:
+        str: Path to the JSON file containing the combined details of relevant tables and their columns.
+    """
+    try:
+        # Initialize SQLite connection
+        sqlite_connection = sqlite3.connect("Chinook.db")
+
+        # Initialize Pinecone client and indexes
+        pc = Pinecone(api_key="Replace with your API key")  # Replace with your API key
+        table_index = pc.Index("tables")
+        column_index = pc.Index("columns")
+
+        # Initialize embedding model
+        embedding_model = OpenAIEmbeddings()
+
+        # Retrieve relevant tables with keys
+        relevant_table_keys = get_relevant_tables_with_keys(user_query, sqlite_connection, table_index)
+
+        # Retrieve relevant columns
+        top_columns = retrieve_top_columns(user_query, column_index, embedding_model)
+
+        # Combine relevant table details with foreign key and column details
+        combined_details = []
+
+        # Create a lookup for relevant tables and their keys
+        table_lookup = {table['table_name']: table for table in relevant_table_keys}
+
+        for table_data in relevant_table_keys:
+            table_name = table_data['table_name']
+
+            # Filter relevant columns for this table
+            relevant_columns = [
+                column for column in top_columns if column['table_name'] == table_name
+            ]
+
+            # Add referenced details for foreign keys
+            foreign_keys_with_details = []
+            if table_data['foreign_keys']:
+                for fk in table_data['foreign_keys']:
+                    referenced_table_name = fk['references_table']
+                    referenced_column_name = fk['references_column']
+
+                    # Fetch referenced table details if available
+                    referenced_table_data = table_lookup.get(referenced_table_name)
+                    referenced_columns = []
+                    if referenced_table_data:
+                        referenced_columns = [
+                            column for column in top_columns if column['table_name'] == referenced_table_name
+                        ]
+
+                    foreign_keys_with_details.append({
+                        "column": fk["column"],
+                        "references_table": referenced_table_name,
+                        "references_column": referenced_column_name,
+                        "referenced_table_details": {
+                            "primary_key": referenced_table_data["primary_key"] if referenced_table_data else None,
+                            "columns": referenced_columns
+                        }
+                    })
+
+            # Combine all details for the table
+            combined_details.append({
+                "table_name": table_name,
+                "primary_key": table_data['primary_key'],
+                "foreign_keys": foreign_keys_with_details,
+                "columns": relevant_columns
+            })
+
+        # Save the combined details to a JSON file
+        file_path = "schema.json"
+        with open(file_path, "w") as file:
+            json.dump(combined_details, file, indent=4)
+
+        return file_path
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return json.dumps({"error": str(e)}, indent=4)
+
+# Define the Tool
+schema = Tool(
+    name="schema",
+    func=get_combined_details,
+    description="""This tool takes a user's natural language query and  a JSON file 
+    containing combined details of relevant tables and their columns, including primary and foreign key information."""
+)
+
+# Example usage
+if __name__ == "__main__":
+    user_query = "How many albums are there?"
+    result = schema.run(user_query)
+
+    # Print the path to the JSON file
+    print(f"Schema saved to: {result}")
